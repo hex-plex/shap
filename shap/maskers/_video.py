@@ -100,7 +100,7 @@ class GaussianSmoothing(nn.Module):
             return out 
     
 
-class Video(Masker):
+class Video(Masker, nn.Module):
     """Masks out image regions with blurring or inpainting."""
 
     def __init__(self, mask_value, shape=None):
@@ -115,6 +115,7 @@ class Video(Masker):
             image shape needs to be provided.
             (c, t, h, w)
         """
+        super(Video, self).__init__()
         if shape is None:
             if isinstance(mask_value, str):
                 raise TypeError("When the mask_value is a string the shape parameter must be given!")
@@ -138,7 +139,7 @@ class Video(Masker):
             self.mask_value = mask_value
             if mask_value.startswith("blur("):
                 self.blur_kernel = tuple(map(int, mask_value[5:-1].split(",")))
-                self.gsblur = GaussianSmoothing(self.blur_kernel).to(device="cuda" if torch.cuda.is_available() else "cpu")
+                self.gsblur = GaussianSmoothing(self.blur_kernel)
         else:
             self.mask_value = np.ones(self.input_shape).flatten() * mask_value
         self.build_partition_tree()

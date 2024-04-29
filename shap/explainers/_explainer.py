@@ -14,7 +14,7 @@ from ..models import Model
 from ..utils import safe_isinstance, show_progress
 from ..utils._exceptions import InvalidAlgorithmError
 from ..utils.transformers import is_transformers_lm
-
+from ..utils._general import OpChain
 
 class Explainer(Serializable):
     """Uses Shapley values to explain any machine learning model or python function.
@@ -262,10 +262,20 @@ class Explainer(Serializable):
         error_std = []
         if callable(getattr(self.masker, "feature_names", None)):
             feature_names = [[] for _ in range(len(args))]
-        for row_args in show_progress(zip(*args), num_rows, self.__class__.__name__+" explainer", silent):
+        for row_id, row_args in enumerate(show_progress(zip(*args), num_rows, self.__class__.__name__+" explainer", silent)):
+            if isinstance(outputs, OpChain):
+                output = outputs
+            elif isinstance(outputs, list):
+                output = outputs
+            elif isinstance(outputs, int):
+                output=outputs
+            elif isinstance(outputs, np.ndarray):
+                output = outputs[row_id,...].reshape(-1).tolist()
+            else:
+                output = outputs
             row_result = self.explain_row(
                 *row_args, max_evals=max_evals, main_effects=main_effects, error_bounds=error_bounds,
-                batch_size=batch_size, outputs=outputs, silent=silent, **kwargs
+                batch_size=batch_size, outputs=output, silent=silent, **kwargs
             )
             values.append(row_result.get("values", None))
             output_indices.append(row_result.get("output_indices", None))

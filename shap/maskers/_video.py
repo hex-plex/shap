@@ -108,7 +108,7 @@ class GaussianSmoothing(nn.Module):
 class Video(Masker, nn.Module):
     """Masks out image regions with blurring or inpainting."""
 
-    def __init__(self, mask_value, shape=None):
+    def __init__(self, mask_value, shape=None, reduction_transform=None, inv_reduction_transform=None):
         """Build a new Image masker with the given masking value.
 
         Parameters
@@ -121,13 +121,27 @@ class Video(Masker, nn.Module):
             (c, t, h, w)
         """
         super(Video, self).__init__()
+        
+        self.reduction_transform = reduction_transform
+        self.inv_reduction_transform = inv_reduction_transform
+        
         if shape is None:
             if isinstance(mask_value, str):
                 raise TypeError("When the mask_value is a string the shape parameter must be given!")
-            self.input_shape = mask_value.shape # the (1,) is because we only return a single masked sample to average over
+            if self.reduction_transform:
+                self.og_input_shape = mask_value.shape
+                self.input_shape = self.reduction_transform(torch.ones(mask_value.shape)).shape
+            else:
+                self.input_shape = mask_value.shape # the (1,) is because we only return a single masked sample to average over
         else:
-            self.input_shape = shape
-
+            if self.reduction_transform:
+                self.og_input_shape = shape
+                self.input_shape = self.reduction_transform(torch.ones(shape)).shape
+            else:
+                self.input_shape = shape # the (1,) is because we only return a single masked sample to average over
+        
+        self._mask_shapes = self.input_shape
+        
         self.input_mask_value = mask_value
 
         # This is the shape of the masks we expect
@@ -158,11 +172,23 @@ class Video(Masker, nn.Module):
         # flag that we return outputs that will not get changed by later masking calls
         self.immutable_outputs = True
 
+    # @property
+    def mask_shapes(self, *args, **kwargs):
+        return [self._mask_shapes]
+    
     def __call__(self, mask, x):
 
         if safe_isinstance(x, "torch.Tensor"):
-            x = x.cpu().numpy()
-
+            if self.reduction_transform:
+                x_up = torch.clone(x).cpu().numpy()
+                x = self.reduction_transform(x).cpu().numpy()
+            else:
+                x = x.cpu().numpy()
+        else:
+            if self.reduction_transform:
+                x_up = np.copy(x)
+                x = self.reduction_transform(torch.from_numpy(x)).cpu().numpy()
+        
         if np.prod(x.shape) != np.prod(self.input_shape):
             raise DimensionError("The length of the image to be masked must match the shape given in the " + \
                             "ImageMasker constructor: "+" * ".join([str(i) for i in x.shape])+ \
@@ -174,6 +200,10 @@ class Video(Masker, nn.Module):
 
         # we preserve flattened inputs as flattened and full-shaped inputs as their original shape
         in_shape = x.shape
+        if self.reduction_transform:
+            og_in_shape = x_up.shape
+            if len(og_in_shape) > 1:
+                x_up = x_up.ravel()
         if len(x.shape) > 1:
             x = x.ravel()
 
@@ -185,21 +215,39 @@ class Video(Masker, nn.Module):
             if self.blur_kernel is not None:
                 if self.last_xid != id(x):
                     with torch.no_grad():
-                        self._blur_value_cache = self.gsblur(x.reshape(self.input_shape)).ravel()
+                        if self.reduction_transform:
+                            self._blur_value_cache = self.gsblur(x_up.reshape(self.og_input_shape)).ravel()
+                        else:
+                            self._blur_value_cache = self.gsblur(x.reshape(self.input_shape)).ravel()
                     # self._blur_value_cache = cv2.blur(x.reshape(self.input_shape), self.blur_kernel).ravel()
                     #ToDo: Change to Conv3d using https://discuss.pytorch.org/t/use-conv2d-and-conv3d-as-blur-fillter-on-matrix/170026/4
                     self.last_xid = id(x)
-                out = x.copy()
+                if self.reduction_transform:
+                    out = x_up.copy()
+                else:
+                    out = x.copy()
+                if self.inv_reduction_transform:
+                    mask = (self.inv_reduction_transform(mask.reshape(1, *self.input_shape).astype("float64"))[0].ravel()>0.5)
                 out[~mask] = self._blur_value_cache[~mask]
 
             elif self.mask_value == "inpaint_telea":
-                out = self.inpaint(x, ~mask, "INPAINT_TELEA")
+                if self.inv_reduction_transform:
+                    mask = (self.inv_reduction_transform(mask.reshape(1, *self.input_shape).astype("float64"))[0].ravel()>0.5)
+                    out = self.inpaint(x_up, ~mask, "INPAINT_TELEA")
+                else:
+                    out = self.inpaint(x, ~mask, "INPAINT_TELEA")
+
             elif self.mask_value == "inpaint_ns":
-                out = self.inpaint(x, ~mask, "INPAINT_NS")
+                if self.inv_reduction_transform:
+                    mask = (self.inv_reduction_transform(mask.reshape(1, *self.input_shape).astype("float64"))[0].ravel()>0.5)
+                    out = self.inpaint(x_up, ~mask, "INPAINT_NS")
+                else:
+                    out = self.inpaint(x, ~mask, "INPAINT_NS")
         else:
             out = x.copy()
             out[~mask] = self.mask_value[~mask]
-
+        if self.reduction_transform:
+            return (out.reshape(1, *og_in_shape), )
         return (out.reshape(1, *in_shape),)
 
     def inpaint(self, x, mask, method):

@@ -149,7 +149,8 @@ class MaskedModel:
             all_outputs.append(outputs)
         outputs = np.concatenate(all_outputs)
 
-        if self.linearize_link and self.link != links.identity and self._linearizing_weights is None:
+        # Be Careful of comparision of njit functions when parallelizing
+        if self.linearize_link and self.link.__name__ != links.identity.__name__ and self._linearizing_weights is None:
             self.background_outputs = outputs[batch_positions[zero_index]:batch_positions[zero_index+1]]
             self._linearizing_weights = link_reweighting(self.background_outputs, self.link)
 
